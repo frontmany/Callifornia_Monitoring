@@ -67,7 +67,10 @@ pub async fn insert_metrics(
         ("active_calls", m.active_calls as f64),
         ("active_meetings", m.active_meetings as f64),
         ("pending_calls", m.pending_calls as f64),
-        ("pending_meeting_requests", m.pending_meeting_requests as f64),
+        (
+            "pending_meeting_requests",
+            m.pending_meeting_requests as f64,
+        ),
         ("uptime_sec", m.uptime_sec as f64),
     ];
 
@@ -119,11 +122,10 @@ pub struct ServerMetricValue {
 }
 
 pub async fn list_servers(pool: &PgPool) -> anyhow::Result<Vec<Server>> {
-    let rows = sqlx::query_as::<_, Server>(
-        "SELECT id, host, port, is_active FROM servers ORDER BY id",
-    )
-    .fetch_all(pool)
-    .await?;
+    let rows =
+        sqlx::query_as::<_, Server>("SELECT id, host, port, is_active FROM servers ORDER BY id")
+            .fetch_all(pool)
+            .await?;
     Ok(rows)
 }
 
@@ -203,10 +205,11 @@ pub async fn list_reports(pool: &PgPool) -> anyhow::Result<Vec<Report>> {
 }
 
 pub async fn get_server_by_id(pool: &PgPool, id: i64) -> anyhow::Result<Option<Server>> {
-    let row = sqlx::query_as::<_, Server>("SELECT id, host, port, is_active FROM servers WHERE id = $1")
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
+    let row =
+        sqlx::query_as::<_, Server>("SELECT id, host, port, is_active FROM servers WHERE id = $1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
     Ok(row)
 }
 
@@ -255,15 +258,17 @@ pub async fn get_metric_aggregates_for_period(
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(metric_name, avg, min, min_at, max, max_at, count)| MetricAggregate {
-            metric_name,
-            avg,
-            min,
-            min_at,
-            max,
-            max_at,
-            count,
-        })
+        .map(
+            |(metric_name, avg, min, min_at, max, max_at, count)| MetricAggregate {
+                metric_name,
+                avg,
+                min,
+                min_at,
+                max,
+                max_at,
+                count,
+            },
+        )
         .collect())
 }
 
@@ -279,16 +284,18 @@ pub async fn get_report_by_id(pool: &PgPool, id: Uuid) -> anyhow::Result<Option<
 
 pub async fn create_report(
     pool: &PgPool,
+    id: Uuid,
     r: &CreateReport,
     file_path: &str,
 ) -> anyhow::Result<Report> {
     let row = sqlx::query_as::<_, Report>(
         r#"
-        INSERT INTO reports (server_id, period_start, period_end, file_path)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO reports (id, server_id, period_start, period_end, file_path)
+        VALUES ($1, $2, $3, $4, $5)
         RETURNING id, server_id, period_start, period_end, created_at, file_path
         "#,
     )
+    .bind(id)
     .bind(r.server_id)
     .bind(r.period_start)
     .bind(r.period_end)

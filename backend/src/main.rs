@@ -1,20 +1,21 @@
 mod api;
 mod data_requester;
 mod db;
+mod report_file;
 mod tcp_client;
 mod tcp_packet;
 mod tcp_packet_type;
 
-use std::collections::HashMap;
-use std::env;
-use std::process;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use dotenvy::dotenv;
 use serde::Deserialize;
-use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
+use std::collections::HashMap;
+use std::env;
+use std::process;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
 use tokio::time::Duration;
 
@@ -98,7 +99,10 @@ impl From<GetMetricsResult> for db::Metrics {
 fn parse_server_addr(addr: &str) -> (String, String) {
     let parts: Vec<&str> = addr.splitn(2, ':').collect();
     let host = parts[0].to_string();
-    let port = parts.get(1).map(|s| (*s).to_string()).unwrap_or_else(|| "8081".to_string());
+    let port = parts
+        .get(1)
+        .map(|s| (*s).to_string())
+        .unwrap_or_else(|| "8081".to_string());
     (host, port)
 }
 
@@ -116,7 +120,11 @@ fn on_metrics_received(
             Err(e) => {
                 let invalid = e.as_bytes();
                 let n = invalid.len();
-                println!("Received {} bytes (invalid UTF-8): {:?}", n, &invalid[..n.min(64)]);
+                println!(
+                    "Received {} bytes (invalid UTF-8): {:?}",
+                    n,
+                    &invalid[..n.min(64)]
+                );
                 return;
             }
         };
@@ -196,7 +204,8 @@ fn on_metrics_received(
                         &server_host,
                         &server_port,
                         &metrics_for_db,
-                    ).await
+                    )
+                    .await
                     {
                         tracing::error!("DB insert failed: {}", e);
                         db_connected.store(false, Ordering::SeqCst);
@@ -265,7 +274,8 @@ fn spawn_db_supervisor(
 async fn main() {
     dotenv().ok();
 
-    tracing_subscriber::fmt().with_env_filter(
+    tracing_subscriber::fmt()
+        .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
@@ -273,7 +283,9 @@ async fn main() {
 
     tracing::info!("Starting monitoring service...");
 
-    let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| {exit_error("DATABASE_URL is not set. Add it to .env or set the environment variable.");});
+    let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| {
+        exit_error("DATABASE_URL is not set. Add it to .env or set the environment variable.");
+    });
     let api_port = env::var("API_PORT").unwrap_or_else(|_| "3000".to_string());
     let reports_dir = env::var("REPORTS_DIR").unwrap_or_else(|_| "reports".to_string());
 
@@ -413,7 +425,7 @@ async fn main() {
         source_statuses,
         latest_metrics,
     );
-    
+
     let bind_addr = format!("0.0.0.0:{}", api_port);
     let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
         Ok(l) => l,
@@ -424,7 +436,9 @@ async fn main() {
         }
     };
     tracing::info!("API server listening on http://{}", bind_addr);
-    tracing::info!("Endpoints: GET /api/servers, GET /api/servers/metrics, GET /api/servers/{{server_id}}/metrics");
+    tracing::info!(
+        "Endpoints: GET /api/servers, GET /api/servers/metrics, GET /api/servers/{{server_id}}/metrics"
+    );
     tracing::info!("Reports: GET/POST /api/reports, GET/PUT/DELETE /api/reports/{{id}}");
     tracing::info!("Status: GET /api/status");
 

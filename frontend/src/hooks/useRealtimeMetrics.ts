@@ -4,14 +4,17 @@ import type { MetricPoint, ServerRealtime } from "../types";
 
 const POLL_INTERVAL_MS = 3000;
 const MAX_POINTS = 80;
-const BYTES_TO_MB = 1_048_576;
+const BYTES_TO_GB = 1_073_741_824;
 
 // Key: "serverId_metricName" -> array of points
 type History = Record<string, MetricPoint[]>;
 
 function toDisplayValue(metricName: string, value: number): number {
   if (metricName === "memory_used" || metricName === "memory_available") {
-    return value / BYTES_TO_MB;
+    return value / BYTES_TO_GB;
+  }
+  if (metricName === "cpu_usage") {
+    return Math.round(value);
   }
   return value;
 }

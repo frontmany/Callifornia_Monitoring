@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
-import type { ReportDetail, Server, UpdateReportPayload } from "../types";
+import type { CreateReportPayload, ReportDetail, ReportPreview, Server, UpdateReportPayload } from "../types";
+import { ServerSelect } from "./ServerSelect";
 
 const MIN_YEAR = 2000;
 const MAX_YEAR = 2100;
 const MIN_DATETIME = "2000-01-01T00:00";
-const MAX_DATETIME = "2100-12-31T23:59";
 
 function formatDateTime(s: string | null | undefined) {
   if (!s) return "\u2014";
@@ -33,39 +33,53 @@ function localInputValueToIso(value: string) {
   return new Date(value).toISOString();
 }
 
+function formatReportMetricValue(metricName: string, value: number) {
+  if (metricName === "cpu_usage") {
+    return `${Math.round(value)}%`;
+  }
+  if (metricName === "memory_used" || metricName === "memory_available") {
+    return `${(value / 1_073_741_824).toFixed(2)} GB`;
+  }
+  return Number.isInteger(value) ? String(value) : value.toFixed(2);
+}
+
 export function ReportDetailsDialog(props: {
-  reportId: string;
+  reportId?: string;
+  reportPreview?: ReportPreview;
+  previewPayload?: CreateReportPayload;
   servers: Server[];
   downServerIds: number[];
   initialMode?: "view" | "edit";
   /** When true, renders in the main column (no overlay); sidebar stays visible in App. */
   inline?: boolean;
-  deleteOnCancel?: boolean;
-  onDeleteReport?: (id: string) => Promise<void> | void;
   onClose: () => void;
-  onUpdated: (id: string, payload: UpdateReportPayload) => Promise<ReportDetail>;
+  onUpdated?: (id: string, payload: UpdateReportPayload) => Promise<ReportDetail>;
+  onCreateReport?: (payload: CreateReportPayload) => Promise<ReportDetail>;
+  onCreated?: (report: ReportDetail) => void;
 }) {
   const {
     reportId,
+    reportPreview,
+    previewPayload,
     servers,
     downServerIds,
     initialMode = "view",
     inline = false,
-    deleteOnCancel = false,
-    onDeleteReport,
     onClose,
     onUpdated,
+    onCreateReport,
+    onCreated,
   } = props;
+  const isPreview = reportPreview != null;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [report, setReport] = useState<ReportDetail | null>(null);
+  const [report, setReport] = useState<ReportDetail | ReportPreview | null>(null);
 
   const [mode, setMode] = useState<"view" | "edit">(initialMode);
   const [serverId, setServerId] = useState<number>(0);
   const [periodStart, setPeriodStart] = useState<string>("");
   const [periodEnd, setPeriodEnd] = useState<string>("");
   const [saving, setSaving] = useState(false);
-  const [cancelling, setCancelling] = useState(false);
 
   const serverLabel = useMemo(() => {
     if (report?.server) return `${report.server.host}:${report.server.port}`;
@@ -82,7 +96,24 @@ export function ReportDetailsDialog(props: {
     setLoading(true);
     setError(null);
     setReport(null);
-    setMode(initialMode);
+    setMode(isPreview ? "edit" : initialMode);
+    if (reportPreview) {
+      setReport(reportPreview);
+      setServerId(previewPayload?.server_id ?? reportPreview.server_id);
+      setPeriodStart(isoToLocalInputValue(reportPreview.period.start));
+      setPeriodEnd(isoToLocalInputValue(reportPreview.period.end));
+      setLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+    if (!reportId) {
+      setError("Report id is missing.");
+      setLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
     api
       .getReport(reportId)
       .then((r) => {
@@ -106,7 +137,7 @@ export function ReportDetailsDialog(props: {
     return () => {
       cancelled = true;
     };
-  }, [initialMode, reportId, servers]);
+  }, [initialMode, isPreview, previewPayload, reportId, reportPreview, servers]);
 
   const metricEntries = useMemo(() => {
     const m = report?.metrics ?? {};
@@ -130,14 +161,40 @@ export function ReportDetailsDialog(props: {
       setError(`Year must be between ${MIN_YEAR} and ${MAX_YEAR}.`);
       return;
     }
+    const now = new Date();
+    if (endDate.getTime() > now.getTime()) {
+      setError("End time cannot be later than the current moment.");
+      return;
+    }
     const startIso = localInputValueToIso(periodStart);
     const endIso = localInputValueToIso(periodEnd);
     if (startDate >= endDate) {
       setError("End date must be after start date.");
       return;
     }
+    if (serverId <= 0) {
+      setError("Please select a server.");
+      return;
+    }
     setSaving(true);
     try {
+      if (isPreview) {
+        if (!onCreateReport) {
+          throw new Error("Create handler is missing.");
+        }
+        const payload: CreateReportPayload = {
+          server_id: serverId,
+          period_start: startIso,
+          period_end: endIso,
+        };
+        const created = await onCreateReport(payload);
+        onCreated?.(created);
+        if (!onCreated) onClose();
+        return;
+      }
+      if (!reportId || !onUpdated) {
+        throw new Error("Update handler is missing.");
+      }
       const payload: UpdateReportPayload = {
         period_start: startIso,
         period_end: endIso,
@@ -146,37 +203,22 @@ export function ReportDetailsDialog(props: {
       await onUpdated(reportId, payload);
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to update report");
+      setError(e instanceof Error ? e.message : isPreview ? "Failed to save report" : "Failed to update report");
     } finally {
       setSaving(false);
     }
   };
 
-  const handleCancel = async () => {
-    if (!deleteOnCancel) {
-      onClose();
-      return;
-    }
-    if (!onDeleteReport) {
-      onClose();
-      return;
-    }
-    setError(null);
-    setCancelling(true);
-    try {
-      await onDeleteReport(reportId);
-      onClose();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to delete report");
-    } finally {
-      setCancelling(false);
-    }
+  const handleCancel = () => {
+    onClose();
   };
+
+  const nowLocalMax = toISOLocal(new Date());
 
   const header = (
     <div className="modal-header">
       <div>
-        <div className="card-title">Report</div>
+        <div className="card-title">{isPreview ? "Report Preview" : "Report"}</div>
       </div>
       {!inline && (
         <button type="button" className="btn-ghost" onClick={onClose} aria-label="Close">
@@ -205,8 +247,10 @@ export function ReportDetailsDialog(props: {
                 </div>
               </div>
               <div className="report-meta__item">
-                <div className="report-meta__label">Created</div>
-                <div className="report-meta__value">{formatDateTime(report.created_at)}</div>
+                <div className="report-meta__label">{isPreview ? "Status" : "Created"}</div>
+                <div className="report-meta__value">
+                  {isPreview ? "Not saved yet" : formatDateTime("created_at" in report ? report.created_at : null)}
+                </div>
               </div>
             </div>
 
@@ -214,30 +258,25 @@ export function ReportDetailsDialog(props: {
               <div className="card mb-md" style={{ marginTop: "1rem" }}>
                 <div className="card-title">Edit report</div>
                 <div className="form-grid">
-                  <div className="field">
-                    <label>Server</label>
-                    <select
-                      value={serverId}
-                      onChange={(e) => setServerId(Number(e.target.value))}
-                      disabled={
-                        !servers.length ||
-                        saving ||
-                        servers.every((s) => downServerIds.includes(s.id))
-                      }
-                    >
-                      {!servers.length && <option value={0}>No servers</option>}
-                      {servers.map((s) => (
-                        <option
-                          key={s.id}
-                          value={s.id}
-                          disabled={downServerIds.includes(s.id)}
-                        >
-                          {s.host}:{s.port}{" "}
-                          {downServerIds.includes(s.id) ? "(down)" : ""}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                  <ServerSelect
+                    label="Server"
+                    value={serverId > 0 ? serverId : null}
+                    onChange={setServerId}
+                    disabled={
+                      !servers.length ||
+                      saving ||
+                      servers.every((s) => downServerIds.includes(s.id))
+                    }
+                    emptyText="No servers"
+                    options={servers.map((s) => {
+                      const isDown = downServerIds.includes(s.id);
+                      return {
+                        value: s.id,
+                        label: `${s.host}:${s.port}${isDown ? " (down)" : ""}`,
+                        disabled: isDown,
+                      };
+                    })}
+                  />
                   <div className="field">
                     <label>Period Start</label>
                     <input
@@ -246,7 +285,7 @@ export function ReportDetailsDialog(props: {
                       onChange={(e) => setPeriodStart(e.target.value)}
                       disabled={saving}
                       min={MIN_DATETIME}
-                      max={MAX_DATETIME}
+                      max={nowLocalMax}
                     />
                   </div>
                   <div className="field">
@@ -257,7 +296,7 @@ export function ReportDetailsDialog(props: {
                       onChange={(e) => setPeriodEnd(e.target.value)}
                       disabled={saving}
                       min={MIN_DATETIME}
-                      max={MAX_DATETIME}
+                      max={nowLocalMax}
                     />
                   </div>
                 </div>
@@ -292,10 +331,10 @@ export function ReportDetailsDialog(props: {
                         >
                           {name}
                         </td>
-                        <td>{s.avg}</td>
-                        <td>{s.min}</td>
+                        <td>{formatReportMetricValue(name, s.avg)}</td>
+                        <td>{formatReportMetricValue(name, s.min)}</td>
                         <td>{formatDateTime(s.min_at)}</td>
-                        <td>{s.max}</td>
+                        <td>{formatReportMetricValue(name, s.max)}</td>
                         <td>{formatDateTime(s.max_at)}</td>
                         <td>{s.count}</td>
                       </tr>
@@ -307,10 +346,10 @@ export function ReportDetailsDialog(props: {
 
             {mode === "edit" && (
               <div className="modal-actions report-actions" style={{ marginTop: "1rem" }}>
-                <button type="button" className="btn-primary report-actions__btn" onClick={handleSave} disabled={saving || cancelling}>
+                <button type="button" className="btn-primary report-actions__btn" onClick={handleSave} disabled={saving}>
                   {saving ? "Saving..." : "Save"}
                 </button>
-                <button type="button" className="btn-ghost report-actions__btn report-actions__cancel" onClick={handleCancel} disabled={saving || cancelling}>
+                <button type="button" className="btn-ghost report-actions__btn report-actions__cancel" onClick={handleCancel} disabled={saving}>
                   Cancel
                 </button>
               </div>

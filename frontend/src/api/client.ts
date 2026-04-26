@@ -53,6 +53,11 @@ export const api = {
     request<import("../types").ReportSummary[]>("/api/reports"),
   getReport: (id: string) =>
     request<import("../types").ReportDetail>(`/api/reports/${id}`),
+  previewReport: (body: import("../types").CreateReportPayload) =>
+    request<import("../types").ReportPreview>("/api/reports/preview", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   createReport: (body: import("../types").CreateReportPayload) =>
     request<import("../types").ReportDetail>("/api/reports", {
       method: "POST",

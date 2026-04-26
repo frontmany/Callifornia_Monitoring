@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ActivityIcon, CpuIcon, ProcessesIcon, ReportsIcon } from "./components/Icons";
 import { RealtimeChart } from "./components/RealtimeChart";
 import { ReportsPage } from "./components/ReportsPage";
 import "./App.css";
@@ -19,7 +20,7 @@ function App() {
             title="Hardware Metrics"
             aria-label="Hardware Metrics"
           >
-            <img src="/icons/sidebar-hardware.png" alt="" className="sidebar-nav__icon" />
+            <CpuIcon className="sidebar-nav__icon" />
           </button>
           <button
             type="button"
@@ -28,7 +29,7 @@ function App() {
             title="Application Metrics"
             aria-label="Application Metrics"
           >
-            <img src="/icons/sidebar-application.png" alt="" className="sidebar-nav__icon" />
+            <ActivityIcon className="sidebar-nav__icon" />
           </button>
           <button
             type="button"
@@ -37,7 +38,7 @@ function App() {
             title="Processes"
             aria-label="Processes"
           >
-            <img src="/icons/sidebar-processes.png" alt="" className="sidebar-nav__icon" />
+            <ProcessesIcon className="sidebar-nav__icon" />
           </button>
           <button
             type="button"
@@ -46,7 +47,7 @@ function App() {
             title="Reports"
             aria-label="Reports"
           >
-            <img src="/icons/sidebar-reports.png" alt="" className="sidebar-nav__icon" />
+            <ReportsIcon className="sidebar-nav__icon" />
           </button>
         </nav>
       </aside>

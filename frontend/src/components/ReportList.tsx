@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import type { ReportSummary, Server } from "../types";
 import { ConfirmDeleteDialog } from "./ConfirmDeleteDialog";
+import { EditIcon, TrashIcon } from "./Icons";
 import { useState } from "react";
 
 function formatDate(s: string | null) {
@@ -76,7 +77,7 @@ export function ReportList(props: {
                     }}
                     aria-label="Edit report"
                   >
-                    <img src="/icons/report-edit.png" alt="" className="icon-btn__img" />
+                    <EditIcon className="icon-btn__icon" />
                   </button>{" "}
                   <button
                     type="button"
@@ -87,7 +88,7 @@ export function ReportList(props: {
                     }}
                     aria-label="Delete"
                   >
-                    <img src="/icons/report-delete.png" alt="" className="icon-btn__img" />
+                    <TrashIcon className="icon-btn__icon" />
                   </button>
                 </td>
               </tr>

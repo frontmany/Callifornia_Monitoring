@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use crate::tcp_packet::Packet;
 use anyhow::{Result, anyhow};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::debug;
-use crate::tcp_packet::Packet;
 
 fn scramble(input_number: u64) -> u64 {
     let mut out = input_number ^ 0xDEADBEEFC_u64;
@@ -33,14 +33,15 @@ impl TcpClient {
         let stream = TcpStream::connect(address).await?;
         let mut guard = self.stream.lock().await;
         *guard = Some(stream);
-        
+
         self.perform_handshake(guard).await?;
-        
+
         Ok(())
     }
 
     pub async fn disconnect(&self) {
-        self.connected.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.connected
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         let mut guard = self.stream.lock().await;
         if let Some(ref mut stream) = *guard {
             let _ = stream.shutdown().await;
@@ -89,12 +90,15 @@ impl TcpClient {
             body,
         })
     }
-    
+
     pub fn is_connected(&self) -> bool {
         self.connected.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    async fn perform_handshake<'a>(&self, mut guard: tokio::sync::MutexGuard<'a, Option<TcpStream>>) -> Result<()> {
+    async fn perform_handshake<'a>(
+        &self,
+        mut guard: tokio::sync::MutexGuard<'a, Option<TcpStream>>,
+    ) -> Result<()> {
         let stream = guard.as_mut().ok_or_else(|| anyhow!("Not connected"))?;
 
         let mut handshake_in_buf = [0u8; 8];
@@ -115,7 +119,8 @@ impl TcpClient {
         if confirmation != handshake_out {
             return Err(anyhow!("Handshake validation failed"));
         }
-        self.connected.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.connected
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         debug!("Handshake completed successfully");
 
         Ok(())

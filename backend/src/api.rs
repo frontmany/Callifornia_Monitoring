@@ -1,19 +1,20 @@
 //! REST API backend for monitoring service.
 
 use std::collections::HashMap;
+use std::io::ErrorKind;
 use std::path::Path as StdPath;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::get,
-    Json, Router,
+    routing::{get, post},
 };
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use tokio::fs;
 use tokio::sync::RwLock;
@@ -21,6 +22,7 @@ use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
 
 use crate::db;
+use crate::report_file;
 
 #[derive(Clone)]
 struct AppState {
@@ -118,33 +120,42 @@ pub struct ReportSummaryResponse {
 #[derive(Debug, Serialize)]
 pub struct ReportResponse {
     id: Uuid,
+    server_id: i64,
     server: ReportServer,
     period: ReportPeriod,
     metrics: HashMap<String, ReportMetricStats>,
     created_at: Option<DateTime<Utc>>,
 }
 
-/// Report file JSON structure.
 #[derive(Debug, Serialize)]
+pub struct ReportPreviewResponse {
+    server_id: i64,
+    server: ReportServer,
+    period: ReportPeriod,
+    metrics: HashMap<String, ReportMetricStats>,
+}
+
+/// Report file JSON structure.
+#[derive(Debug, Serialize, Deserialize)]
 struct ReportFile {
     server: ReportServer,
     period: ReportPeriod,
     metrics: HashMap<String, ReportMetricStats>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ReportServer {
     host: String,
     port: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ReportPeriod {
     start: DateTime<Utc>,
     end: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ReportMetricStats {
     avg: f64,
     min: f64,
@@ -152,6 +163,11 @@ struct ReportMetricStats {
     max: f64,
     max_at: DateTime<Utc>,
     count: i64,
+}
+
+struct BuiltReport {
+    server: db::Server,
+    metrics: HashMap<String, ReportMetricStats>,
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +190,173 @@ fn ensure_db_available(state: &AppState) -> Option<axum::response::Response> {
         return Some(db_unavailable_response());
     }
     None
+}
+
+async fn build_report(
+    state: &AppState,
+    payload: &db::CreateReport,
+) -> Result<BuiltReport, axum::response::Response> {
+    let server = match db::get_server_by_id(&state.pool, payload.server_id).await {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "Server not found".to_string(),
+                }),
+            )
+                .into_response());
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response());
+        }
+    };
+
+    let aggregates = match db::get_metric_aggregates_for_period(
+        &state.pool,
+        payload.server_id,
+        payload.period_start,
+        payload.period_end,
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response());
+        }
+    };
+
+    let metrics: HashMap<String, ReportMetricStats> = aggregates
+        .into_iter()
+        .map(|a| {
+            (
+                a.metric_name,
+                ReportMetricStats {
+                    avg: a.avg,
+                    min: a.min,
+                    min_at: a.min_at,
+                    max: a.max,
+                    max_at: a.max_at,
+                    count: a.count,
+                },
+            )
+        })
+        .collect();
+
+    Ok(BuiltReport { server, metrics })
+}
+
+fn report_path_from_db(
+    state: &AppState,
+    report: &db::Report,
+) -> Result<std::path::PathBuf, axum::response::Response> {
+    let Some(stored_path) = report
+        .file_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    else {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Report file path is missing in database.".to_string(),
+            }),
+        )
+            .into_response());
+    };
+    Ok(report_file::resolve_stored_file_path(
+        &state.reports_dir,
+        stored_path,
+    ))
+}
+
+async fn read_report_file(
+    state: &AppState,
+    report: &db::Report,
+) -> Result<ReportFile, axum::response::Response> {
+    let path = report_path_from_db(state, report)?;
+    let json = match fs::read_to_string(&path).await {
+        Ok(json) => json,
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "Report file not found.".to_string(),
+                }),
+            )
+                .into_response());
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to read report file: {}", e),
+                }),
+            )
+                .into_response());
+        }
+    };
+
+    serde_json::from_str(&json).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to parse report file: {}", e),
+            }),
+        )
+            .into_response()
+    })
+}
+
+async fn write_report_file(
+    state: &AppState,
+    report: &db::Report,
+    report_file: &ReportFile,
+) -> Result<(), axum::response::Response> {
+    let path = report_path_from_db(state, report)?;
+    if let Some(parent) = path.parent() {
+        if let Err(e) = fs::create_dir_all(parent).await {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to create reports directory: {}", e),
+                }),
+            )
+                .into_response());
+        }
+    }
+
+    let json = serde_json::to_string_pretty(report_file).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to serialize report: {}", e),
+            }),
+        )
+            .into_response()
+    })?;
+
+    fs::write(&path, json).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to write report file: {}", e),
+            }),
+        )
+            .into_response()
+    })
 }
 
 async fn get_status(State(state): State<AppState>) -> impl IntoResponse {
@@ -238,7 +421,7 @@ async fn get_metrics_all(State(state): State<AppState>) -> impl IntoResponse {
                     error: e.to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -251,7 +434,7 @@ async fn get_metrics_all(State(state): State<AppState>) -> impl IntoResponse {
                     error: e.to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -295,9 +478,8 @@ async fn get_metrics_all(State(state): State<AppState>) -> impl IntoResponse {
             let (metrics, recorded_at) = by_server
                 .remove(&s.id)
                 .unwrap_or_else(|| (HashMap::new(), Utc::now()));
-            let effective_recorded_at = latest
-                .map(|m| m.recorded_at.clone())
-                .unwrap_or(recorded_at);
+            let effective_recorded_at =
+                latest.map(|m| m.recorded_at.clone()).unwrap_or(recorded_at);
             ServerRealtime {
                 id: s.id,
                 host: s.host,
@@ -339,7 +521,7 @@ async fn get_metrics_for_server(
                     error: e.to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -388,7 +570,7 @@ async fn get_metrics_for_server(
                     error: e.to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -396,10 +578,7 @@ async fn get_metrics_for_server(
         .iter()
         .map(|m| (m.metric_name.clone(), m.value))
         .collect();
-    let recorded_at_from_db = metrics
-        .first()
-        .map(|m| m.time)
-        .unwrap_or_else(Utc::now);
+    let recorded_at_from_db = metrics.first().map(|m| m.time).unwrap_or_else(Utc::now);
     let latest = { state.latest_metrics.read().await.get(&server_id).cloned() };
     let effective_recorded_at = latest
         .as_ref()
@@ -453,10 +632,7 @@ async fn list_reports(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
-async fn get_report(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> impl IntoResponse {
+async fn get_report(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
     if let Some(resp) = ensure_db_available(&state) {
         return resp;
     }
@@ -470,7 +646,7 @@ async fn get_report(
                     error: "Report not found".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
         Err(e) => {
             return (
@@ -479,83 +655,55 @@ async fn get_report(
                     error: e.to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
 
-    let server = match db::get_server_by_id(&state.pool, report.server_id).await {
-        Ok(Some(s)) => s,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: "Server not found".to_string(),
-                }),
-            )
-                .into_response()
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response()
-        }
+    let report_file = match read_report_file(&state, &report).await {
+        Ok(report_file) => report_file,
+        Err(resp) => return resp,
     };
-
-    let aggregates = match db::get_metric_aggregates_for_period(
-        &state.pool,
-        report.server_id,
-        report.period_start,
-        report.period_end,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response()
-        }
-    };
-
-    let metrics: HashMap<String, ReportMetricStats> = aggregates
-        .into_iter()
-        .map(|a| {
-            (
-                a.metric_name,
-                ReportMetricStats {
-                    avg: a.avg,
-                    min: a.min,
-                    min_at: a.min_at,
-                    max: a.max,
-                    max_at: a.max_at,
-                    count: a.count,
-                },
-            )
-        })
-        .collect();
 
     (
         StatusCode::OK,
         Json(ReportResponse {
             id: report.id,
+            server_id: report.server_id,
+            server: report_file.server,
+            period: report_file.period,
+            metrics: report_file.metrics,
+            created_at: report.created_at,
+        }),
+    )
+        .into_response()
+}
+
+async fn preview_report(
+    State(state): State<AppState>,
+    Json(payload): Json<db::CreateReport>,
+) -> impl IntoResponse {
+    if let Some(resp) = ensure_db_available(&state) {
+        return resp;
+    }
+
+    let built = match build_report(&state, &payload).await {
+        Ok(report) => report,
+        Err(resp) => return resp,
+    };
+
+    (
+        StatusCode::OK,
+        Json(ReportPreviewResponse {
+            server_id: payload.server_id,
             server: ReportServer {
-                host: server.host,
-                port: server.port,
+                host: built.server.host,
+                port: built.server.port,
             },
             period: ReportPeriod {
-                start: report.period_start,
-                end: report.period_end,
+                start: payload.period_start,
+                end: payload.period_end,
             },
-            metrics,
-            created_at: report.created_at,
+            metrics: built.metrics,
         }),
     )
         .into_response()
@@ -569,82 +717,28 @@ async fn create_report(
         return resp;
     }
 
-    let server = match db::get_server_by_id(&state.pool, payload.server_id).await {
-        Ok(Some(s)) => s,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: "Server not found".to_string(),
-                }),
-            )
-            .into_response()
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-            .into_response()
-        }
+    let built = match build_report(&state, &payload).await {
+        Ok(report) => report,
+        Err(resp) => return resp,
     };
-
-    let aggregates = match db::get_metric_aggregates_for_period(
-        &state.pool,
-        payload.server_id,
-        payload.period_start,
-        payload.period_end,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response()
-        }
-    };
-
-    let metrics: HashMap<String, ReportMetricStats> = aggregates
-        .into_iter()
-        .map(|a| {
-            (
-                a.metric_name,
-                ReportMetricStats {
-                    avg: a.avg,
-                    min: a.min,
-                    min_at: a.min_at,
-                    max: a.max,
-                    max_at: a.max_at,
-                    count: a.count,
-                },
-            )
-        })
-        .collect();
 
     let report_file = ReportFile {
         server: ReportServer {
-            host: server.host.clone(),
-            port: server.port.clone(),
+            host: built.server.host.clone(),
+            port: built.server.port.clone(),
         },
         period: ReportPeriod {
             start: payload.period_start,
             end: payload.period_end,
         },
-        metrics: metrics.clone(),
+        metrics: built.metrics.clone(),
     };
 
-    let start_date = payload.period_start.format("%Y-%m-%d").to_string();
-    let end_date = payload.period_end.format("%Y-%m-%d").to_string();
-    let filename = format!("{}_{}_{}.json", server.host, start_date, end_date);
-    let file_path = StdPath::new(&state.reports_dir).join(&filename);
-    let file_path_str = file_path.to_string_lossy().into_owned();
+    let id = Uuid::new_v4();
+    let relpath = report_file::report_json_relpath(id);
+    let file_path = StdPath::new(&state.reports_dir).join(&relpath);
+    // Store a stable, relative key in DB: filename under reports_dir
+    let file_path_str = relpath;
 
     if let Err(e) = fs::create_dir_all(&state.reports_dir).await {
         return (
@@ -653,7 +747,7 @@ async fn create_report(
                 error: format!("Failed to create reports directory: {}", e),
             }),
         )
-        .into_response();
+            .into_response();
     }
 
     let json = match serde_json::to_string_pretty(&report_file) {
@@ -665,7 +759,7 @@ async fn create_report(
                     error: format!("Failed to serialize report: {}", e),
                 }),
             )
-            .into_response()
+                .into_response();
         }
     };
 
@@ -679,20 +773,21 @@ async fn create_report(
             .into_response();
     }
 
-    match db::create_report(&state.pool, &payload, &file_path_str).await {
+    match db::create_report(&state.pool, id, &payload, &file_path_str).await {
         Ok(report) => (
             StatusCode::CREATED,
             Json(ReportResponse {
                 id: report.id,
+                server_id: report.server_id,
                 server: ReportServer {
-                    host: server.host,
-                    port: server.port,
+                    host: built.server.host,
+                    port: built.server.port,
                 },
                 period: ReportPeriod {
                     start: payload.period_start,
                     end: payload.period_end,
                 },
-                metrics,
+                metrics: built.metrics,
                 created_at: report.created_at,
             }),
         )
@@ -716,6 +811,60 @@ async fn update_report(
         return resp;
     }
 
+    let current = match db::get_report_by_id(&state.pool, id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "Report not found".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let next_payload = db::CreateReport {
+        server_id: payload.server_id.unwrap_or(current.server_id),
+        period_start: payload.period_start.unwrap_or(current.period_start),
+        period_end: payload.period_end.unwrap_or(current.period_end),
+    };
+
+    let built = match build_report(&state, &next_payload).await {
+        Ok(report) => report,
+        Err(resp) => return resp,
+    };
+
+    let report_file = ReportFile {
+        server: ReportServer {
+            host: built.server.host,
+            port: built.server.port,
+        },
+        period: ReportPeriod {
+            start: next_payload.period_start,
+            end: next_payload.period_end,
+        },
+        metrics: built.metrics,
+    };
+
+    let mut target_report = current.clone();
+    if let Some(file_path) = payload.file_path.clone() {
+        target_report.file_path = Some(file_path);
+    }
+
+    if let Err(resp) = write_report_file(&state, &target_report, &report_file).await {
+        return resp;
+    }
+
     let updated = match db::update_report(&state.pool, id, &payload).await {
         Ok(Some(r)) => r,
         Ok(None) => {
@@ -725,7 +874,7 @@ async fn update_report(
                     error: "Report not found".to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
         Err(e) => {
             return (
@@ -734,95 +883,66 @@ async fn update_report(
                     error: e.to_string(),
                 }),
             )
-                .into_response()
+                .into_response();
         }
     };
-
-    // Return the same shape as GET /api/reports/{id}: recompute aggregates for updated period/server.
-    let server = match db::get_server_by_id(&state.pool, updated.server_id).await {
-        Ok(Some(s)) => s,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: "Server not found".to_string(),
-                }),
-            )
-                .into_response()
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response()
-        }
-    };
-
-    let aggregates = match db::get_metric_aggregates_for_period(
-        &state.pool,
-        updated.server_id,
-        updated.period_start,
-        updated.period_end,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response()
-        }
-    };
-
-    let metrics: HashMap<String, ReportMetricStats> = aggregates
-        .into_iter()
-        .map(|a| {
-            (
-                a.metric_name,
-                ReportMetricStats {
-                    avg: a.avg,
-                    min: a.min,
-                    min_at: a.min_at,
-                    max: a.max,
-                    max_at: a.max_at,
-                    count: a.count,
-                },
-            )
-        })
-        .collect();
 
     (
         StatusCode::OK,
         Json(ReportResponse {
             id: updated.id,
-            server: ReportServer {
-                host: server.host,
-                port: server.port,
-            },
-            period: ReportPeriod {
-                start: updated.period_start,
-                end: updated.period_end,
-            },
-            metrics,
+            server_id: updated.server_id,
+            server: report_file.server,
+            period: report_file.period,
+            metrics: report_file.metrics,
             created_at: updated.created_at,
         }),
     )
         .into_response()
 }
 
-async fn delete_report(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> impl IntoResponse {
+async fn delete_report(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
     if let Some(resp) = ensure_db_available(&state) {
         return resp;
+    }
+
+    let report = match db::get_report_by_id(&state.pool, id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "Report not found".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    if let Some(file_path) = report.file_path.as_deref() {
+        if !file_path.trim().is_empty() {
+            let final_path = report_file::resolve_stored_file_path(&state.reports_dir, file_path);
+            if let Err(e) = fs::remove_file(&final_path).await {
+                if e.kind() != ErrorKind::NotFound {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: format!("Failed to delete report file: {}", e),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        }
     }
 
     match db::delete_report(&state.pool, id).await {
@@ -864,8 +984,12 @@ pub fn router(
         .route("/api/status", get(get_status))
         .route("/api/servers", get(get_servers))
         .route("/api/servers/metrics", get(get_metrics_all))
-        .route("/api/servers/{server_id}/metrics", get(get_metrics_for_server))
+        .route(
+            "/api/servers/{server_id}/metrics",
+            get(get_metrics_for_server),
+        )
         .route("/api/reports", get(list_reports).post(create_report))
+        .route("/api/reports/preview", post(preview_report))
         .route(
             "/api/reports/{id}",
             get(get_report).put(update_report).delete(delete_report),

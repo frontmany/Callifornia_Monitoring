@@ -33,6 +33,11 @@ export function useReports() {
     [refetch]
   );
 
+  const previewReport = useCallback(
+    async (payload: CreateReportPayload) => api.previewReport(payload),
+    []
+  );
+
   const deleteReport = useCallback(async (id: string) => {
     await api.deleteReport(id);
     setReports((prev) => prev.filter((r) => r.id !== id));
@@ -47,5 +52,5 @@ export function useReports() {
     [refetch]
   );
 
-  return { reports, loading, error, refetch, createReport, updateReport, deleteReport };
+  return { reports, loading, error, refetch, previewReport, createReport, updateReport, deleteReport };
 }

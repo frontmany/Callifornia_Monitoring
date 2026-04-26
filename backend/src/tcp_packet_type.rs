@@ -2,5 +2,5 @@
 #[derive(Debug)]
 pub enum PacketType {
     GetMetrics = 4,
-    GetMetricsResult = 41
+    GetMetricsResult = 41,
 }

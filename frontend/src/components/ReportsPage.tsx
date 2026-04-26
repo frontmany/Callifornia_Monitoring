@@ -5,18 +5,25 @@ import { ReportList } from "./ReportList";
 import { useReports } from "../hooks/useReports";
 import { useServers } from "../hooks/useServers";
 import { useServerStatuses } from "../hooks/useServerStatuses";
+import type { CreateReportPayload, ReportDetail, ReportPreview } from "../types";
+
+interface ReportPreviewState {
+  payload: CreateReportPayload;
+  report: ReportPreview;
+}
 
 export function ReportsPage() {
   const reportsState = useReports();
   const serversState = useServers();
   const { downIds } = useServerStatuses();
   const [detailReportId, setDetailReportId] = useState<string | null>(null);
-  const [newlyCreatedReportId, setNewlyCreatedReportId] = useState<string | null>(null);
+  const [previewState, setPreviewState] = useState<ReportPreviewState | null>(null);
 
   useEffect(() => {
     const onPopState = () => {
       const state = window.history.state as { reportDetailId?: string } | null;
       setDetailReportId(state?.reportDetailId ?? null);
+      setPreviewState(null);
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -27,51 +34,58 @@ export function ReportsPage() {
     window.scrollTo(0, 0);
   }, [detailReportId]);
 
-  useEffect(() => {
-    if (!detailReportId) {
-      setNewlyCreatedReportId(null);
-      return;
-    }
-    if (newlyCreatedReportId && newlyCreatedReportId !== detailReportId) {
-      setNewlyCreatedReportId(null);
-    }
-  }, [detailReportId, newlyCreatedReportId]);
-
   const openReport = (id: string) => {
-    setNewlyCreatedReportId(null);
+    setPreviewState(null);
     setDetailReportId(id);
     window.history.pushState({ reportDetailId: id }, "");
   };
 
   const closeReport = () => {
+    if (previewState) {
+      setPreviewState(null);
+      return;
+    }
     const state = window.history.state as { reportDetailId?: string } | null;
     if (state?.reportDetailId) {
       window.history.back();
       return;
     }
-    setNewlyCreatedReportId(null);
     setDetailReportId(null);
   };
 
-  const createAndOpenReport = async (payload: Parameters<typeof reportsState.createReport>[0]) => {
-    const created = await reportsState.createReport(payload);
-    setNewlyCreatedReportId(created.id);
-    setDetailReportId(created.id);
-    window.history.pushState({ reportDetailId: created.id }, "");
-    return created;
+  const previewAndOpenReport = async (payload: CreateReportPayload) => {
+    const report = await reportsState.previewReport(payload);
+    setDetailReportId(null);
+    setPreviewState({ payload, report });
+    return report;
+  };
+
+  const openSavedReport = (_report: ReportDetail) => {
+    setPreviewState(null);
+    setDetailReportId(null);
   };
 
   return (
     <>
-      {detailReportId ? (
+      {previewState ? (
+        <ReportDetailsDialog
+          reportPreview={previewState.report}
+          previewPayload={previewState.payload}
+          servers={serversState.servers}
+          downServerIds={downIds}
+          initialMode="edit"
+          inline
+          onClose={closeReport}
+          onCreateReport={reportsState.createReport}
+          onCreated={openSavedReport}
+        />
+      ) : detailReportId ? (
         <ReportDetailsDialog
           reportId={detailReportId}
           servers={serversState.servers}
           downServerIds={downIds}
           initialMode="edit"
           inline
-          deleteOnCancel={newlyCreatedReportId === detailReportId}
-          onDeleteReport={reportsState.deleteReport}
           onClose={closeReport}
           onUpdated={reportsState.updateReport}
         />
@@ -80,7 +94,7 @@ export function ReportsPage() {
           <CreateReportForm
             servers={serversState.servers}
             downServerIds={downIds}
-            onCreate={createAndOpenReport}
+            onCreate={previewAndOpenReport}
           />
           <ReportList
             reports={reportsState.reports}

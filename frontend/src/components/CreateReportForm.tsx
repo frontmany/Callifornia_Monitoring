@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import type { CreateReportPayload, Server } from "../types";
+import { ServerSelect } from "./ServerSelect";
 
 const MIN_YEAR = 2000;
 const MAX_YEAR = 3000;
 const MIN_DATETIME = "2000-01-01T00:00";
-const MAX_DATETIME = "2100-12-31T23:59";
 
 function toISOLocal(d: Date) {
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -68,13 +68,17 @@ export function CreateReportForm(props: {
       ) {
         throw new Error(`Year must be between ${MIN_YEAR} and ${MAX_YEAR}.`);
       }
+      const now = new Date();
+      if (endDate.getTime() > now.getTime()) {
+        throw new Error("End time cannot be later than the current moment.");
+      }
       const start = startDate.toISOString();
       const end = endDate.toISOString();
       if (startDate >= endDate) {
         throw new Error("End date must be after start date.");
       }
       await onCreate({ server_id: serverId, period_start: start, period_end: end });
-      setMessage({ text: "Report created successfully.", ok: true });
+      setMessage({ text: "Loading preview…", ok: true });
     } catch (err) {
       setMessage({ text: err instanceof Error ? err.message : "Failed to create report", ok: false });
     } finally {
@@ -82,26 +86,28 @@ export function CreateReportForm(props: {
     }
   };
 
+  const nowLocalMax = toISOLocal(new Date());
+
   return (
     <div className="card mb-md">
       <div className="card-title">New Report</div>
       <form onSubmit={handleSubmit}>
         <div className="form-grid">
-          <div className="field">
-            <label>Server</label>
-            <select
-              value={serverId}
-              onChange={(e) => setServerId(Number(e.target.value))}
-              disabled={!servers.length || servers.every((s) => downServerIds.includes(s.id))}
-            >
-              {!servers.length && <option value={0}>No servers</option>}
-              {servers.map((s) => (
-                <option key={s.id} value={s.id} disabled={downServerIds.includes(s.id)}>
-                  {s.host}:{s.port} {downServerIds.includes(s.id) ? "(down)" : ""}
-                </option>
-              ))}
-            </select>
-          </div>
+          <ServerSelect
+            label="Server"
+            value={serverId > 0 ? serverId : null}
+            onChange={setServerId}
+            disabled={!servers.length || servers.every((s) => downServerIds.includes(s.id))}
+            emptyText="No servers"
+            options={servers.map((s) => {
+              const isDown = downServerIds.includes(s.id);
+              return {
+                value: s.id,
+                label: `${s.host}:${s.port}${isDown ? " (down)" : ""}`,
+                disabled: isDown,
+              };
+            })}
+          />
           <div className="field">
             <label>Period Start</label>
             <input
@@ -109,7 +115,7 @@ export function CreateReportForm(props: {
               value={periodStart}
               onChange={(e) => setPeriodStart(e.target.value)}
               min={MIN_DATETIME}
-              max={MAX_DATETIME}
+              max={nowLocalMax}
             />
           </div>
           <div className="field">
@@ -119,7 +125,7 @@ export function CreateReportForm(props: {
               value={periodEnd}
               onChange={(e) => setPeriodEnd(e.target.value)}
               min={MIN_DATETIME}
-              max={MAX_DATETIME}
+              max={nowLocalMax}
             />
           </div>
           <button
@@ -129,7 +135,7 @@ export function CreateReportForm(props: {
             aria-label="Create report"
             title="Create report"
           >
-            +
+            Add
           </button>
         </div>
         {message && (

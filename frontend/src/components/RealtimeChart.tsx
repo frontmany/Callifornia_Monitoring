@@ -14,6 +14,7 @@ import { useStatus } from "../hooks/useStatus";
 import { useEffect, useMemo, useState } from "react";
 import { useServerStatuses } from "../hooks/useServerStatuses";
 import type { ProcessMetrics, ServerRuntime } from "../types";
+import { ServerSelect } from "./ServerSelect";
 
 const COLORS = ["#6c8cff", "#44cf6c", "#f55050", "#f0a840", "#a78bfa", "#38bdf8"];
 const HARDWARE_METRICS = new Set(["cpu_usage", "memory_used", "memory_available"]);
@@ -28,8 +29,8 @@ const APPLICATION_METRICS = new Set([
 
 const METRIC_LABELS: Record<string, string> = {
   cpu_usage: "CPU Usage (%)",
-  memory_used: "Memory Used (MB)",
-  memory_available: "Memory Available (MB)",
+  memory_used: "Memory Used (GB)",
+  memory_available: "Memory Available (GB)",
   active_users: "Active Users",
   active_calls: "Active Calls",
   active_meetings: "Active Meetings",
@@ -63,8 +64,18 @@ function formatDuration(totalSeconds: number): string {
   return parts.join(" ");
 }
 
-function formatMemoryMb(bytes: number): string {
-  return `${(bytes / 1_048_576).toFixed(2)} MB`;
+function formatMemoryGb(bytes: number): string {
+  return `${(bytes / 1_073_741_824).toFixed(2)} GB`;
+}
+
+function formatChartValue(metricName: string, value: number): string {
+  if (metricName === "cpu_usage") {
+    return `${Math.round(value)}%`;
+  }
+  if (metricName === "memory_used" || metricName === "memory_available") {
+    return `${value.toFixed(2)} GB`;
+  }
+  return Number.isInteger(value) ? String(value) : value.toFixed(2);
 }
 
 interface MetricGroup {
@@ -223,27 +234,28 @@ export function RealtimeChart({ view }: { view: RealtimeView }) {
         )}
       </div>
       <div className="mb-sm" style={{ maxWidth: 360 }}>
-        <div className="field">
-          <label>Server</label>
-          <select
-            value={selectedServerId == null ? "" : String(selectedServerId)}
-            onChange={(e) => setSelectedServerId(Number(e.target.value))}
-            disabled={selectedServerId == null}
-          >
-            {servers.map((s) => {
-              const isDown = downIds.includes(s.id);
-              return (
-                <option key={s.id} value={s.id} disabled={isDown}>
-                  {s.host}:{s.port} {isDown ? "(down)" : ""}
-                </option>
-              );
-            })}
-          </select>
-        </div>
+        <ServerSelect
+          label="Server"
+          value={selectedServerId}
+          onChange={setSelectedServerId}
+          disabled={selectedServerId == null}
+          options={servers.map((s) => {
+            const isDown = downIds.includes(s.id);
+            return {
+              value: s.id,
+              label: `${s.host}:${s.port}${isDown ? " (down)" : ""}`,
+              disabled: isDown,
+            };
+          })}
+        />
       </div>
       {view === "application" && <RuntimeStats runtime={selectedRuntime} />}
       {view !== "processes" && (
-        <div className="charts-grid">
+        <div
+          className={`charts-grid ${
+            view === "hardware" && groups.length % 2 === 1 ? "charts-grid--last-wide" : ""
+          }`}
+        >
           {groups.map((group) => (
             <MetricCard key={group.metricName} group={group} history={history} />
           ))}
@@ -317,8 +329,8 @@ function ProcessesTable({ processes }: { processes: ProcessMetrics[] | null }) {
                 <tr key={processInfo.pid}>
                   <td>{processInfo.pid}</td>
                   <td className="process-name">{processInfo.name}</td>
-                  <td>{processInfo.cpu_usage.toFixed(2)}</td>
-                  <td>{formatMemoryMb(processInfo.memory_rss)}</td>
+                  <td>{Math.round(processInfo.cpu_usage)}%</td>
+                  <td>{formatMemoryGb(processInfo.memory_rss)}</td>
                   <td>{processInfo.threads}</td>
                   <td>{processInfo.fd_count}</td>
                   <td>{formatDuration(processInfo.uptime_sec)}</td>
@@ -378,6 +390,7 @@ function MetricCard({
             axisLine={false}
             tickLine={false}
             domain={[0, yMax]}
+            tickFormatter={(value) => formatChartValue(group.metricName, Number(value))}
           />
           <Tooltip
             contentStyle={{
@@ -388,6 +401,7 @@ function MetricCard({
               color: "#e1e4eb",
             }}
             labelFormatter={(_, payload) => payload?.[0]?.payload?.time ?? ""}
+            formatter={(value) => formatChartValue(group.metricName, Number(value))}
           />
           {group.servers.length > 1 && (
             <Legend

@@ -91,7 +91,14 @@ export interface ReportDetail {
   server_id?: number;
   period: ReportPeriod;
   metrics: Record<string, MetricStats>;
-  created_at: string;
+  created_at: string | null;
+}
+
+export interface ReportPreview {
+  server: ReportServerRef;
+  server_id: number;
+  period: ReportPeriod;
+  metrics: Record<string, MetricStats>;
 }
 
 export interface CreateReportPayload {

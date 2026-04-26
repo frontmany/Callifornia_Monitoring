@@ -1,13 +1,13 @@
+use crate::tcp_client::TcpClient;
+use crate::tcp_packet::Packet;
+use crate::tcp_packet_type::PacketType;
+use anyhow::{Result, anyhow};
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::time;
-use tracing::{info, error, warn, debug};
-use anyhow::{Result, anyhow};
-use crate::tcp_packet::Packet;
-use crate::tcp_packet_type::PacketType;
-use crate::tcp_client::TcpClient;
+use tracing::{debug, error, info, warn};
 
 fn is_connection_error(e: &anyhow::Error) -> bool {
     if let Some(io_err) = e.downcast_ref::<io::Error>() {
@@ -43,12 +43,7 @@ pub struct DataRequester {
 }
 
 impl DataRequester {
-    pub fn new<F, S>(
-        server_addr: &str,
-        interval_secs: u64,
-        callback: F,
-        status_callback: S,
-    ) -> Self
+    pub fn new<F, S>(server_addr: &str, interval_secs: u64, callback: F, status_callback: S) -> Self
     where
         F: Fn(Vec<u8>) + Send + Sync + 'static,
         S: Fn(bool, Option<String>) + Send + Sync + 'static,
@@ -66,10 +61,13 @@ impl DataRequester {
     }
 
     pub async fn start(&self) -> Result<()> {
-        if self.is_running.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        if self
+            .is_running
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
             return Err(anyhow!("Data requester already running"));
         }
-        
+
         let client = self.client.clone();
         let recv_callback = self.recv_callback.clone();
         let interval_secs = self.interval_secs;
@@ -77,13 +75,16 @@ impl DataRequester {
         let server_addr = self.server_addr.clone();
         let status_callback = self.status_callback.clone();
         let mut shutdown_rx = self.shutdown_tx.subscribe();
-        
-        info!("Starting data requester for {} with interval {} seconds", server_addr, interval_secs);
-        
+
+        info!(
+            "Starting data requester for {} with interval {} seconds",
+            server_addr, interval_secs
+        );
+
         tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_secs(interval_secs));
             let mut last_reported_connected = false;
-            
+
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
@@ -145,15 +146,16 @@ impl DataRequester {
                     }
                 }
             }
-            
+
             is_running.store(false, std::sync::atomic::Ordering::SeqCst);
         });
-        
+
         Ok(())
     }
-    
+
     pub async fn stop(&self) {
-        self.is_running.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.is_running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         let _ = self.shutdown_tx.send(());
         info!("Stopping data requester for {}", self.server_addr);
     }
@@ -163,7 +165,10 @@ impl DataRequester {
         server_addr: &str,
         shutdown_rx: &mut broadcast::Receiver<()>,
     ) -> ReconnectResult {
-        warn!("Client disconnected, trying to reconnect to {}...", server_addr);
+        warn!(
+            "Client disconnected, trying to reconnect to {}...",
+            server_addr
+        );
         loop {
             match client.connect(server_addr).await {
                 Ok(()) => {
@@ -188,19 +193,22 @@ impl DataRequester {
             Err(_) => Ok(None),
         }
     }
-    
+
     async fn request_and_receive_data(client: &TcpClient) -> Result<Vec<u8>> {
         let request_packet = Packet::new(PacketType::GetMetrics as u32, Vec::new());
         client.send_packet(request_packet).await?;
         debug!("Data request sent");
-        
+
         let response = client.receive_packet().await?;
-        
+
         if response.packet_type != PacketType::GetMetricsResult as u32 {
-            return Err(anyhow!("Unexpected packet type: {}, expected: {}",
-                response.packet_type, PacketType::GetMetricsResult as u32));
+            return Err(anyhow!(
+                "Unexpected packet type: {}, expected: {}",
+                response.packet_type,
+                PacketType::GetMetricsResult as u32
+            ));
         }
-        
+
         Ok(response.body)
     }
 }
