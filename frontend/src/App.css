@@ -109,22 +109,25 @@ body {
   width: 44px;
   height: 44px;
   padding: 0;
-  color: var(--text-muted);
+  color: #b4b9c7;
   background: transparent;
   border: none;
   border-radius: 10px;
   cursor: pointer;
-  transition: color 0.2s, background 0.2s;
+  transition: color 0.2s, background 0.2s, border-color 0.2s;
+  border: 1px solid transparent;
 }
 
 .sidebar-nav button:hover {
-  color: var(--text);
+  color: #e6e8ee;
   background: var(--bg-card-hover);
+  border-color: rgba(120, 140, 170, 0.25);
 }
 
 .sidebar-nav button.active {
-  color: var(--accent);
+  color: #e7edff;
   background: rgba(108, 140, 255, 0.15);
+  border-color: rgba(108, 140, 255, 0.45);
 }
 
 .sidebar-nav button.active:hover {
@@ -132,10 +135,11 @@ body {
 }
 
 .sidebar-nav__icon {
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   object-fit: contain;
-  opacity: 0.72;
+  opacity: 0.78;
+  flex-shrink: 0;
   transition: opacity 0.2s;
 }
 
@@ -391,6 +395,18 @@ body {
 .btn-primary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.create-report-btn {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  padding: 0;
+  font-size: 1.65rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .btn-danger {

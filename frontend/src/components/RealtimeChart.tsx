@@ -16,6 +16,15 @@ import { useServerStatuses } from "../hooks/useServerStatuses";
 import type { ProcessMetrics, ServerRuntime } from "../types";
 
 const COLORS = ["#6c8cff", "#44cf6c", "#f55050", "#f0a840", "#a78bfa", "#38bdf8"];
+const HARDWARE_METRICS = new Set(["cpu_usage", "memory_used", "memory_available"]);
+const APPLICATION_METRICS = new Set([
+  "active_users",
+  "active_calls",
+  "active_meetings",
+  "pending_calls",
+  "pending_meeting_requests",
+  "uptime_sec",
+]);
 
 const METRIC_LABELS: Record<string, string> = {
   cpu_usage: "CPU Usage (%)",
@@ -64,6 +73,8 @@ interface MetricGroup {
   servers: { key: string; serverLabel: string; colorIdx: number }[];
 }
 
+type RealtimeView = "hardware" | "application" | "processes";
+
 function DashboardErrorState({ type, message }: { type: "error" | "degraded"; message: string }) {
   return (
     <div className={`dashboard-error-state ${type === "degraded" ? "dashboard-error-state--degraded" : ""}`}>
@@ -88,7 +99,7 @@ function DashboardErrorState({ type, message }: { type: "error" | "degraded"; me
   );
 }
 
-export function RealtimeChart() {
+export function RealtimeChart({ view }: { view: RealtimeView }) {
   const { status, error: statusError } = useStatus();
   const { history, serverSnapshots, error: metricsError, loading } = useRealtimeMetrics();
   const { servers } = useServers();
@@ -120,6 +131,12 @@ export function RealtimeChart() {
   const selectedServerSnapshot = selectedServerId != null ? serverSnapshots[selectedServerId] : undefined;
   const selectedRuntime = selectedServerSnapshot?.server_runtime ?? null;
   const selectedProcesses = selectedServerSnapshot?.processes ?? null;
+  const sectionTitle =
+    view === "hardware"
+      ? "Hardware Metrics"
+      : view === "application"
+        ? "Application Metrics"
+        : "Processes";
 
   const groups = useMemo(() => {
     if (selectedServerId == null) return [];
@@ -146,6 +163,13 @@ export function RealtimeChart() {
     const result: MetricGroup[] = [];
     let colorIdx = 0;
     for (const metricName of sortedMetricNames) {
+      const metricInCurrentView =
+        view === "hardware"
+          ? HARDWARE_METRICS.has(metricName)
+          : view === "application"
+            ? APPLICATION_METRICS.has(metricName)
+            : false;
+      if (!metricInCurrentView) continue;
       const entries = (byMetric.get(metricName) ?? [])
         .slice()
         .sort((a, b) => a.serverId - b.serverId);
@@ -160,7 +184,7 @@ export function RealtimeChart() {
       });
     }
     return result;
-  }, [history, serverMap, selectedServerId]);
+  }, [history, serverMap, selectedServerId, view]);
 
   if (hasHardError) {
     return (
@@ -171,7 +195,7 @@ export function RealtimeChart() {
     );
   }
 
-  if (groups.length === 0 && !loading) {
+  if (view !== "processes" && groups.length === 0 && !loading) {
     return (
       <div className="dashboard-error-state dashboard-error-state--empty">
         <div className="dashboard-error-state__icon" aria-hidden>
@@ -193,7 +217,7 @@ export function RealtimeChart() {
   return (
     <div>
       <div className="section-header">
-        <h2 className="section-title">Realtime Metrics</h2>
+        <h2 className="section-title">{sectionTitle}</h2>
         {isDegraded && (
           <div className="status-banner warning">Some servers are down</div>
         )}
@@ -217,13 +241,15 @@ export function RealtimeChart() {
           </select>
         </div>
       </div>
-      <RuntimeStats runtime={selectedRuntime} />
-      <div className="charts-grid">
-        {groups.map((group) => (
-          <MetricCard key={group.metricName} group={group} history={history} />
-        ))}
-      </div>
-      <ProcessesTable processes={selectedProcesses} />
+      {view === "application" && <RuntimeStats runtime={selectedRuntime} />}
+      {view !== "processes" && (
+        <div className="charts-grid">
+          {groups.map((group) => (
+            <MetricCard key={group.metricName} group={group} history={history} />
+          ))}
+        </div>
+      )}
+      {view === "processes" && <ProcessesTable processes={selectedProcesses} />}
     </div>
   );
 }

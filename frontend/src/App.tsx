@@ -3,10 +3,10 @@ import { RealtimeChart } from "./components/RealtimeChart";
 import { ReportsPage } from "./components/ReportsPage";
 import "./App.css";
 
-type Tab = "dashboard" | "reports";
+type Tab = "hardware" | "application" | "processes" | "reports";
 
 function App() {
-  const [tab, setTab] = useState<Tab>("dashboard");
+  const [tab, setTab] = useState<Tab>("hardware");
 
   return (
     <div className="app">
@@ -14,12 +14,30 @@ function App() {
         <nav className="sidebar-nav">
           <button
             type="button"
-            className={tab === "dashboard" ? "active" : ""}
-            onClick={() => setTab("dashboard")}
-            title="Dashboard"
-            aria-label="Dashboard"
+            className={tab === "hardware" ? "active" : ""}
+            onClick={() => setTab("hardware")}
+            title="Hardware Metrics"
+            aria-label="Hardware Metrics"
           >
-            <img src="/icons/sidebar-dashboard.png" alt="" className="sidebar-nav__icon" />
+            <img src="/icons/sidebar-hardware.png" alt="" className="sidebar-nav__icon" />
+          </button>
+          <button
+            type="button"
+            className={tab === "application" ? "active" : ""}
+            onClick={() => setTab("application")}
+            title="Application Metrics"
+            aria-label="Application Metrics"
+          >
+            <img src="/icons/sidebar-application.png" alt="" className="sidebar-nav__icon" />
+          </button>
+          <button
+            type="button"
+            className={tab === "processes" ? "active" : ""}
+            onClick={() => setTab("processes")}
+            title="Processes"
+            aria-label="Processes"
+          >
+            <img src="/icons/sidebar-processes.png" alt="" className="sidebar-nav__icon" />
           </button>
           <button
             type="button"
@@ -34,7 +52,9 @@ function App() {
       </aside>
       <div className="app-main">
         <div className="page">
-          {tab === "dashboard" && <RealtimeChart />}
+          {tab === "hardware" && <RealtimeChart view="hardware" />}
+          {tab === "application" && <RealtimeChart view="application" />}
+          {tab === "processes" && <RealtimeChart view="processes" />}
           {tab === "reports" && <ReportsPage />}
         </div>
       </div>

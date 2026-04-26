@@ -122,8 +122,14 @@ export function CreateReportForm(props: {
               max={MAX_DATETIME}
             />
           </div>
-          <button type="submit" className="btn-primary" disabled={submitting || !servers.length}>
-            {submitting ? "Creating..." : "Create"}
+          <button
+            type="submit"
+            className="btn-primary create-report-btn"
+            disabled={submitting || !servers.length}
+            aria-label="Create report"
+            title="Create report"
+          >
+            +
           </button>
         </div>
         {message && (

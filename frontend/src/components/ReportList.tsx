@@ -24,7 +24,7 @@ export function ReportList(props: {
   onDelete: (id: string) => Promise<void> | void;
   onOpenReport: (id: string) => void;
 }) {
-  const { reports, loading, error, servers, downServerIds, onDelete, onOpenReport } = props;
+  const { reports, loading, error, servers, onDelete, onOpenReport } = props;
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
 
@@ -57,9 +57,9 @@ export function ReportList(props: {
             {reports.map((r) => (
               <tr
                 key={r.id}
-                onDoubleClick={() => onOpenReport(r.id)}
+                onClick={() => onOpenReport(r.id)}
                 style={{ cursor: "pointer" }}
-                title="Double click to open report"
+                title="Click to open report"
               >
                 <td>
                   {formatDate(r.period_start)} &mdash; {formatDate(r.period_end)}
@@ -70,7 +70,10 @@ export function ReportList(props: {
                   <button
                     type="button"
                     className="icon-btn"
-                    onClick={() => onOpenReport(r.id)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onOpenReport(r.id);
+                    }}
                     aria-label="Edit report"
                   >
                     <img src="/icons/report-edit.png" alt="" className="icon-btn__img" />
@@ -78,7 +81,10 @@ export function ReportList(props: {
                   <button
                     type="button"
                     className="icon-btn"
-                    onClick={() => setPendingDeleteId(r.id)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setPendingDeleteId(r.id);
+                    }}
                     aria-label="Delete"
                   >
                     <img src="/icons/report-delete.png" alt="" className="icon-btn__img" />
