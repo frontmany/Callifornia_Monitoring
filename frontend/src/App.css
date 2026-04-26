@@ -543,6 +543,78 @@ body {
 .mb-sm { margin-bottom: 0.75rem; }
 .mb-md { margin-bottom: 1.25rem; }
 
+.runtime-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 0.75rem;
+}
+
+.runtime-stat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.9rem 1rem;
+}
+
+.runtime-stat-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 0.35rem;
+}
+
+.runtime-stat-value {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.processes-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.processes-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+}
+
+.processes-table th {
+  text-align: left;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  padding: 0.45rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.processes-table td {
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.processes-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.processes-table tbody tr:hover td {
+  background: var(--bg-card-hover);
+}
+
+.process-name {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ── Report detail (inline in reports tab, replaces list + form) ── */
 
 .report-detail-inline {

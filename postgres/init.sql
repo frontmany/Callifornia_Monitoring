@@ -65,7 +65,13 @@ INSERT INTO metrics (id, name, unit) VALUES
 (1, 'cpu_usage', 'percent'),
 (2, 'memory_used', 'bytes'),
 (3, 'memory_available', 'bytes'),
-(5, 'active_users', 'count');
+(5, 'active_users', 'count'),
+(6, 'active_calls', 'count'),
+(7, 'active_meetings', 'count'),
+(8, 'pending_calls', 'count'),
+(9, 'pending_meeting_requests', 'count'),
+(10, 'uptime_sec', 'seconds')
+ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO servers (host, port, is_active) VALUES
 ('80.93.63.213', '8081', true);

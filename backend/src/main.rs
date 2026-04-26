@@ -19,6 +19,49 @@ use tokio::sync::RwLock;
 use tokio::time::Duration;
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+struct ServerRuntimePayload {
+    #[serde(rename = "active_users")]
+    active_users: u64,
+    #[serde(rename = "active_calls")]
+    active_calls: u64,
+    #[serde(rename = "active_meetings")]
+    active_meetings: u64,
+    #[serde(rename = "pending_calls")]
+    pending_calls: u64,
+    #[serde(rename = "pending_meeting_requests")]
+    pending_meeting_requests: u64,
+    #[serde(rename = "uptime_sec")]
+    uptime_sec: u64,
+}
+
+impl Default for ServerRuntimePayload {
+    fn default() -> Self {
+        Self {
+            active_users: 0,
+            active_calls: 0,
+            active_meetings: 0,
+            pending_calls: 0,
+            pending_meeting_requests: 0,
+            uptime_sec: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ProcessPayload {
+    pid: u32,
+    name: String,
+    #[serde(rename = "cpu_usage")]
+    cpu_usage_percent: f64,
+    #[serde(rename = "memory_rss")]
+    memory_rss_bytes: u64,
+    threads: u32,
+    fd_count: u32,
+    uptime_sec: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct GetMetricsResult {
     #[serde(rename = "recorded_at")]
     recorded_at: DateTime<Utc>,
@@ -28,8 +71,11 @@ struct GetMetricsResult {
     memory_used_bytes: u64,
     #[serde(rename = "memory_available")]
     memory_available_bytes: u64,
-    #[serde(rename = "active_users")]
-    active_users: u64,
+    #[serde(default)]
+    #[serde(rename = "server_runtime")]
+    server_runtime: ServerRuntimePayload,
+    #[serde(default)]
+    processes: Vec<ProcessPayload>,
 }
 
 impl From<GetMetricsResult> for db::Metrics {
@@ -39,7 +85,12 @@ impl From<GetMetricsResult> for db::Metrics {
             cpu_usage_percent: m.cpu_usage_percent,
             memory_used_bytes: m.memory_used_bytes,
             memory_available_bytes: m.memory_available_bytes,
-            active_users: m.active_users,
+            active_users: m.server_runtime.active_users,
+            active_calls: m.server_runtime.active_calls,
+            active_meetings: m.server_runtime.active_meetings,
+            pending_calls: m.server_runtime.pending_calls,
+            pending_meeting_requests: m.server_runtime.pending_meeting_requests,
+            uptime_sec: m.server_runtime.uptime_sec,
         }
     }
 }
@@ -55,6 +106,8 @@ fn on_metrics_received(
     pool: Arc<PgPool>,
     metric_ids: Arc<RwLock<HashMap<String, i16>>>,
     db_connected: Arc<AtomicBool>,
+    latest_metrics: Arc<RwLock<HashMap<i64, api::LatestServerMetrics>>>,
+    server_id: i64,
     server_addr: String,
 ) -> impl Fn(Vec<u8>) + Send + Sync + 'static {
     move |data: Vec<u8>| {
@@ -73,20 +126,55 @@ fn on_metrics_received(
                 let mem_used_mb = metrics.memory_used_bytes as f64 / 1_048_576.0;
                 let mem_avail_mb = metrics.memory_available_bytes as f64 / 1_048_576.0;
                 tracing::info!(
-                    "Metrics | CPU: {:.1}% | Memory: {:.2} MB used, {:.2} MB available | Active users: {}",
+                    "Metrics | CPU: {:.1}% | Memory: {:.2} MB used, {:.2} MB available | Active users: {} | Active calls: {} | Active meetings: {} | Pending calls: {} | Pending requests: {} | Processes: {}",
                     metrics.cpu_usage_percent,
                     mem_used_mb,
                     mem_avail_mb,
-                    metrics.active_users
+                    metrics.server_runtime.active_users,
+                    metrics.server_runtime.active_calls,
+                    metrics.server_runtime.active_meetings,
+                    metrics.server_runtime.pending_calls,
+                    metrics.server_runtime.pending_meeting_requests,
+                    metrics.processes.len(),
                 );
 
                 let pool = Arc::clone(&pool);
                 let metric_ids = Arc::clone(&metric_ids);
                 let db_connected = Arc::clone(&db_connected);
+                let latest_metrics = Arc::clone(&latest_metrics);
                 let (server_host, server_port) = parse_server_addr(&server_addr);
                 let metrics_for_db = db::Metrics::from(metrics.clone());
+                let latest_payload = api::LatestServerMetrics {
+                    recorded_at: metrics.recorded_at,
+                    server_runtime: api::ServerRuntime {
+                        active_users: metrics.server_runtime.active_users,
+                        active_calls: metrics.server_runtime.active_calls,
+                        active_meetings: metrics.server_runtime.active_meetings,
+                        pending_calls: metrics.server_runtime.pending_calls,
+                        pending_meeting_requests: metrics.server_runtime.pending_meeting_requests,
+                        uptime_sec: metrics.server_runtime.uptime_sec,
+                    },
+                    processes: metrics
+                        .processes
+                        .iter()
+                        .map(|p| api::ProcessMetrics {
+                            pid: p.pid,
+                            name: p.name.clone(),
+                            cpu_usage: p.cpu_usage_percent,
+                            memory_rss: p.memory_rss_bytes,
+                            threads: p.threads,
+                            fd_count: p.fd_count,
+                            uptime_sec: p.uptime_sec,
+                        })
+                        .collect(),
+                };
 
                 tokio::spawn(async move {
+                    {
+                        let mut guard = latest_metrics.write().await;
+                        guard.insert(server_id, latest_payload);
+                    }
+
                     if !db_connected.load(Ordering::SeqCst) {
                         tracing::warn!("DB unavailable: metric batch received but not persisted");
                         return;
@@ -245,6 +333,8 @@ async fn main() {
 
     let source_statuses: Arc<RwLock<HashMap<i64, api::SourceRuntimeStatus>>> =
         Arc::new(RwLock::new(HashMap::new()));
+    let latest_metrics: Arc<RwLock<HashMap<i64, api::LatestServerMetrics>>> =
+        Arc::new(RwLock::new(HashMap::new()));
     {
         let mut guard = source_statuses.write().await;
         let now = Utc::now();
@@ -277,6 +367,8 @@ async fn main() {
                 Arc::clone(&pool),
                 Arc::clone(&metric_ids),
                 Arc::clone(&db_connected),
+                Arc::clone(&latest_metrics),
+                server_id,
                 server_addr.clone(),
             ),
             move |connected: bool, err: Option<String>| {
@@ -319,6 +411,7 @@ async fn main() {
         reports_dir,
         db_connected,
         source_statuses,
+        latest_metrics,
     );
     
     let bind_addr = format!("0.0.0.0:{}", api_port);

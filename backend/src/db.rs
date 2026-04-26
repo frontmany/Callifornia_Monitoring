@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, QueryBuilder};
+use tracing::warn;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -12,6 +13,11 @@ pub struct Metrics {
     pub memory_used_bytes: u64,
     pub memory_available_bytes: u64,
     pub active_users: u64,
+    pub active_calls: u64,
+    pub active_meetings: u64,
+    pub pending_calls: u64,
+    pub pending_meeting_requests: u64,
+    pub uptime_sec: u64,
 }
 
 pub async fn load_metric_ids_by_name(pool: &PgPool) -> anyhow::Result<HashMap<String, i16>> {
@@ -53,37 +59,41 @@ pub async fn insert_metrics(
     };
     let time = m.recorded_at;
 
-    let cpu_id = *metric_ids
-        .get("cpu_usage")
-        .ok_or_else(|| anyhow::anyhow!("metric 'cpu_usage' not found in database"))?;
-    let mem_used_id = *metric_ids
-        .get("memory_used")
-        .ok_or_else(|| anyhow::anyhow!("metric 'memory_used' not found in database"))?;
-    let mem_avail_id = *metric_ids
-        .get("memory_available")
-        .ok_or_else(|| anyhow::anyhow!("metric 'memory_available' not found in database"))?;
-    let users_id = *metric_ids
-        .get("active_users")
-        .ok_or_else(|| anyhow::anyhow!("metric 'active_users' not found in database"))?;
+    let metrics_to_insert = [
+        ("cpu_usage", m.cpu_usage_percent),
+        ("memory_used", m.memory_used_bytes as f64),
+        ("memory_available", m.memory_available_bytes as f64),
+        ("active_users", m.active_users as f64),
+        ("active_calls", m.active_calls as f64),
+        ("active_meetings", m.active_meetings as f64),
+        ("pending_calls", m.pending_calls as f64),
+        ("pending_meeting_requests", m.pending_meeting_requests as f64),
+        ("uptime_sec", m.uptime_sec as f64),
+    ];
 
-    sqlx::query(
-        r#"
-        INSERT INTO metric_values (time, server_id, metric_id, value)
-        VALUES ($1, $2, $3, $4), ($1, $2, $5, $6), ($1, $2, $7, $8), ($1, $2, $9, $10)
-        "#,
-    )
-    .bind(time)
-    .bind(server_id)
-    .bind(cpu_id)
-    .bind(m.cpu_usage_percent)
-    .bind(mem_used_id)
-    .bind(m.memory_used_bytes as f64)
-    .bind(mem_avail_id)
-    .bind(m.memory_available_bytes as f64)
-    .bind(users_id)
-    .bind(m.active_users as f64)
-    .execute(pool)
-    .await?;
+    let mut rows: Vec<(i16, f64)> = Vec::with_capacity(metrics_to_insert.len());
+    for (name, value) in metrics_to_insert {
+        match metric_ids.get(name).copied() {
+            Some(metric_id) => rows.push((metric_id, value)),
+            None => warn!("metric '{}' not found in database, skipping", name),
+        }
+    }
+
+    if rows.is_empty() {
+        return Err(anyhow::anyhow!(
+            "no known metrics found in database for insert"
+        ));
+    }
+
+    let mut query_builder: QueryBuilder<'_, Postgres> =
+        QueryBuilder::new("INSERT INTO metric_values (time, server_id, metric_id, value) ");
+    query_builder.push_values(rows, |mut b, (metric_id, value)| {
+        b.push_bind(time)
+            .push_bind(server_id)
+            .push_bind(metric_id)
+            .push_bind(value);
+    });
+    query_builder.build().execute(pool).await?;
     Ok(())
 }
 

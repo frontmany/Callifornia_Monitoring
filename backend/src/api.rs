@@ -28,6 +28,7 @@ struct AppState {
     reports_dir: String,
     db_connected: Arc<AtomicBool>,
     source_statuses: Arc<RwLock<HashMap<i64, SourceRuntimeStatus>>>,
+    latest_metrics: Arc<RwLock<HashMap<i64, LatestServerMetrics>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -49,6 +50,36 @@ pub struct ServerRealtime {
     pub last_error: Option<String>,
     pub metrics: Option<HashMap<String, f64>>,
     pub recorded_at: Option<DateTime<Utc>>,
+    pub server_runtime: Option<ServerRuntime>,
+    pub processes: Option<Vec<ProcessMetrics>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ServerRuntime {
+    pub active_users: u64,
+    pub active_calls: u64,
+    pub active_meetings: u64,
+    pub pending_calls: u64,
+    pub pending_meeting_requests: u64,
+    pub uptime_sec: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProcessMetrics {
+    pub pid: u32,
+    pub name: String,
+    pub cpu_usage: f64,
+    pub memory_rss: u64,
+    pub threads: u32,
+    pub fd_count: u32,
+    pub uptime_sec: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct LatestServerMetrics {
+    pub recorded_at: DateTime<Utc>,
+    pub server_runtime: ServerRuntime,
+    pub processes: Vec<ProcessMetrics>,
 }
 
 #[derive(Debug, Serialize)]
@@ -235,6 +266,7 @@ async fn get_metrics_all(State(state): State<AppState>) -> impl IntoResponse {
     }
 
     let status_snapshot = { state.source_statuses.read().await.clone() };
+    let latest_snapshot = { state.latest_metrics.read().await.clone() };
     let servers_realtime: Vec<ServerRealtime> = servers
         .into_iter()
         .map(|s| {
@@ -254,10 +286,18 @@ async fn get_metrics_all(State(state): State<AppState>) -> impl IntoResponse {
                     last_error,
                     metrics: None,
                     recorded_at: None,
+                    server_runtime: None,
+                    processes: None,
                 };
             }
 
-            let (metrics, recorded_at) = by_server.remove(&s.id).unwrap_or_else(|| (HashMap::new(), Utc::now()));
+            let latest = latest_snapshot.get(&s.id);
+            let (metrics, recorded_at) = by_server
+                .remove(&s.id)
+                .unwrap_or_else(|| (HashMap::new(), Utc::now()));
+            let effective_recorded_at = latest
+                .map(|m| m.recorded_at.clone())
+                .unwrap_or(recorded_at);
             ServerRealtime {
                 id: s.id,
                 host: s.host,
@@ -266,7 +306,9 @@ async fn get_metrics_all(State(state): State<AppState>) -> impl IntoResponse {
                 last_change,
                 last_error,
                 metrics: Some(metrics),
-                recorded_at: Some(recorded_at),
+                recorded_at: Some(effective_recorded_at),
+                server_runtime: latest.map(|m| m.server_runtime.clone()),
+                processes: latest.map(|m| m.processes.clone()),
             }
         })
         .collect();
@@ -330,6 +372,8 @@ async fn get_metrics_for_server(
                 last_error,
                 metrics: None,
                 recorded_at: None,
+                server_runtime: None,
+                processes: None,
             }),
         )
             .into_response();
@@ -352,10 +396,15 @@ async fn get_metrics_for_server(
         .iter()
         .map(|m| (m.metric_name.clone(), m.value))
         .collect();
-    let recorded_at = metrics
+    let recorded_at_from_db = metrics
         .first()
         .map(|m| m.time)
         .unwrap_or_else(Utc::now);
+    let latest = { state.latest_metrics.read().await.get(&server_id).cloned() };
+    let effective_recorded_at = latest
+        .as_ref()
+        .map(|m| m.recorded_at.clone())
+        .unwrap_or(recorded_at_from_db);
 
     (
         StatusCode::OK,
@@ -367,7 +416,9 @@ async fn get_metrics_for_server(
             last_change,
             last_error,
             metrics: Some(metrics_map),
-            recorded_at: Some(recorded_at),
+            recorded_at: Some(effective_recorded_at),
+            server_runtime: latest.as_ref().map(|m| m.server_runtime.clone()),
+            processes: latest.map(|m| m.processes),
         }),
     )
         .into_response()
@@ -802,6 +853,7 @@ pub fn router(
     reports_dir: String,
     db_connected: Arc<AtomicBool>,
     source_statuses: Arc<RwLock<HashMap<i64, SourceRuntimeStatus>>>,
+    latest_metrics: Arc<RwLock<HashMap<i64, LatestServerMetrics>>>,
 ) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -823,6 +875,7 @@ pub fn router(
             reports_dir,
             db_connected,
             source_statuses,
+            latest_metrics,
         })
         .layer(cors)
 }

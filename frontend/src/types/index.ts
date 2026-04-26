@@ -31,6 +31,27 @@ export interface ServerRealtime {
   last_error: string | null;
   metrics: Record<string, number> | null;
   recorded_at: string | null; // ISO datetime or null when down
+  server_runtime: ServerRuntime | null;
+  processes: ProcessMetrics[] | null;
+}
+
+export interface ServerRuntime {
+  active_users: number;
+  active_calls: number;
+  active_meetings: number;
+  pending_calls: number;
+  pending_meeting_requests: number;
+  uptime_sec: number;
+}
+
+export interface ProcessMetrics {
+  pid: number;
+  name: string;
+  cpu_usage: number;
+  memory_rss: number;
+  threads: number;
+  fd_count: number;
+  uptime_sec: number;
 }
 
 export interface RealtimeMetricsResponse {

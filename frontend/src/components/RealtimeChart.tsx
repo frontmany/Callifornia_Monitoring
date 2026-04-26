@@ -13,6 +13,7 @@ import { useServers } from "../hooks/useServers";
 import { useStatus } from "../hooks/useStatus";
 import { useEffect, useMemo, useState } from "react";
 import { useServerStatuses } from "../hooks/useServerStatuses";
+import type { ProcessMetrics, ServerRuntime } from "../types";
 
 const COLORS = ["#6c8cff", "#44cf6c", "#f55050", "#f0a840", "#a78bfa", "#38bdf8"];
 
@@ -21,6 +22,11 @@ const METRIC_LABELS: Record<string, string> = {
   memory_used: "Memory Used (MB)",
   memory_available: "Memory Available (MB)",
   active_users: "Active Users",
+  active_calls: "Active Calls",
+  active_meetings: "Active Meetings",
+  pending_calls: "Pending Calls",
+  pending_meeting_requests: "Pending Meeting Requests",
+  uptime_sec: "Uptime (sec)",
 };
 
 function formatTime(ts: number) {
@@ -30,6 +36,26 @@ function formatTime(ts: number) {
     second: "2-digit",
     hour12: false,
   });
+}
+
+function formatDuration(totalSeconds: number): string {
+  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) {
+    return "0s";
+  }
+  const days = Math.floor(totalSeconds / 86_400);
+  const hours = Math.floor((totalSeconds % 86_400) / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = Math.floor(totalSeconds % 60);
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  if (seconds > 0 || parts.length === 0) parts.push(`${seconds}s`);
+  return parts.join(" ");
+}
+
+function formatMemoryMb(bytes: number): string {
+  return `${(bytes / 1_048_576).toFixed(2)} MB`;
 }
 
 interface MetricGroup {
@@ -64,7 +90,7 @@ function DashboardErrorState({ type, message }: { type: "error" | "degraded"; me
 
 export function RealtimeChart() {
   const { status, error: statusError } = useStatus();
-  const { history, error: metricsError, loading } = useRealtimeMetrics();
+  const { history, serverSnapshots, error: metricsError, loading } = useRealtimeMetrics();
   const { servers } = useServers();
   const { downIds } = useServerStatuses();
   const [selectedServerId, setSelectedServerId] = useState<number | null>(null);
@@ -91,6 +117,9 @@ export function RealtimeChart() {
     () => new Map(servers.map((s) => [s.id, `${s.host}:${s.port}`])),
     [servers]
   );
+  const selectedServerSnapshot = selectedServerId != null ? serverSnapshots[selectedServerId] : undefined;
+  const selectedRuntime = selectedServerSnapshot?.server_runtime ?? null;
+  const selectedProcesses = selectedServerSnapshot?.processes ?? null;
 
   const groups = useMemo(() => {
     if (selectedServerId == null) return [];
@@ -131,7 +160,7 @@ export function RealtimeChart() {
       });
     }
     return result;
-  }, [history, serverMap]);
+  }, [history, serverMap, selectedServerId]);
 
   if (hasHardError) {
     return (
@@ -188,11 +217,91 @@ export function RealtimeChart() {
           </select>
         </div>
       </div>
+      <RuntimeStats runtime={selectedRuntime} />
       <div className="charts-grid">
         {groups.map((group) => (
           <MetricCard key={group.metricName} group={group} history={history} />
         ))}
       </div>
+      <ProcessesTable processes={selectedProcesses} />
+    </div>
+  );
+}
+
+function RuntimeStats({ runtime }: { runtime: ServerRuntime | null }) {
+  if (!runtime) {
+    return null;
+  }
+  return (
+    <div className="runtime-stats-grid mb-sm">
+      <div className="runtime-stat-card">
+        <div className="runtime-stat-label">Active Users</div>
+        <div className="runtime-stat-value">{runtime.active_users}</div>
+      </div>
+      <div className="runtime-stat-card">
+        <div className="runtime-stat-label">Active Calls</div>
+        <div className="runtime-stat-value">{runtime.active_calls}</div>
+      </div>
+      <div className="runtime-stat-card">
+        <div className="runtime-stat-label">Active Meetings</div>
+        <div className="runtime-stat-value">{runtime.active_meetings}</div>
+      </div>
+      <div className="runtime-stat-card">
+        <div className="runtime-stat-label">Pending Calls</div>
+        <div className="runtime-stat-value">{runtime.pending_calls}</div>
+      </div>
+      <div className="runtime-stat-card">
+        <div className="runtime-stat-label">Pending Requests</div>
+        <div className="runtime-stat-value">{runtime.pending_meeting_requests}</div>
+      </div>
+      <div className="runtime-stat-card">
+        <div className="runtime-stat-label">Uptime</div>
+        <div className="runtime-stat-value">{formatDuration(runtime.uptime_sec)}</div>
+      </div>
+    </div>
+  );
+}
+
+function ProcessesTable({ processes }: { processes: ProcessMetrics[] | null }) {
+  if (processes == null) {
+    return null;
+  }
+
+  return (
+    <div className="card" style={{ marginTop: "1rem" }}>
+      <div className="card-title">Top Processes</div>
+      {processes.length === 0 ? (
+        <p className="text-muted">No process data in the latest snapshot.</p>
+      ) : (
+        <div className="processes-table-wrap">
+          <table className="processes-table">
+            <thead>
+              <tr>
+                <th>PID</th>
+                <th>Name</th>
+                <th>CPU (%)</th>
+                <th>Memory RSS</th>
+                <th>Threads</th>
+                <th>FDs</th>
+                <th>Uptime</th>
+              </tr>
+            </thead>
+            <tbody>
+              {processes.map((processInfo) => (
+                <tr key={processInfo.pid}>
+                  <td>{processInfo.pid}</td>
+                  <td className="process-name">{processInfo.name}</td>
+                  <td>{processInfo.cpu_usage.toFixed(2)}</td>
+                  <td>{formatMemoryMb(processInfo.memory_rss)}</td>
+                  <td>{processInfo.threads}</td>
+                  <td>{processInfo.fd_count}</td>
+                  <td>{formatDuration(processInfo.uptime_sec)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

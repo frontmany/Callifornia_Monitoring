@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
-import type { MetricPoint } from "../types";
+import type { MetricPoint, ServerRealtime } from "../types";
 
 const POLL_INTERVAL_MS = 3000;
 const MAX_POINTS = 80;
@@ -18,12 +18,14 @@ function toDisplayValue(metricName: string, value: number): number {
 
 export function useRealtimeMetrics() {
   const [history, setHistory] = useState<History>({});
+  const [serverSnapshots, setServerSnapshots] = useState<Record<number, ServerRealtime>>({});
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const poll = useCallback(async () => {
     try {
       const { servers } = await api.getServersMetrics();
+      setServerSnapshots(Object.fromEntries(servers.map((server) => [server.id, server])));
       setError(null);
       setLoading(false);
       const now = Date.now();
@@ -52,5 +54,5 @@ export function useRealtimeMetrics() {
     return () => clearInterval(id);
   }, [poll]);
 
-  return { history, error, loading, refetch: poll };
+  return { history, serverSnapshots, error, loading, refetch: poll };
 }
