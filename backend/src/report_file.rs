@@ -8,18 +8,7 @@ pub fn report_json_relpath(id: Uuid) -> String {
 }
 
 /// Resolve what is stored in `reports.file_path` to an absolute path on disk.
-/// Storage rule:
-/// - store **relative** filename (preferred), resolved against `reports_dir`
-/// - if DB contains an absolute path (legacy), use it as-is
+/// Storage rule: store a relative filename under `reports_dir`.
 pub fn resolve_stored_file_path(reports_dir: &str, stored: &str) -> PathBuf {
-    let stored = stored.trim();
-    if stored.is_empty() {
-        return PathBuf::new();
-    }
-    let p = Path::new(stored);
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        Path::new(reports_dir).join(p)
-    }
+    Path::new(reports_dir).join(stored)
 }

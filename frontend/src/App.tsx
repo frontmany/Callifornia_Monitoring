@@ -7,21 +7,12 @@ import "./App.css";
 type Tab = "hardware" | "application" | "processes" | "reports";
 
 function App() {
-  const [tab, setTab] = useState<Tab>("hardware");
+  const [tab, setTab] = useState<Tab>("application");
 
   return (
     <div className="app">
       <aside className="sidebar">
         <nav className="sidebar-nav">
-          <button
-            type="button"
-            className={tab === "hardware" ? "active" : ""}
-            onClick={() => setTab("hardware")}
-            title="Hardware Metrics"
-            aria-label="Hardware Metrics"
-          >
-            <CpuIcon className="sidebar-nav__icon" />
-          </button>
           <button
             type="button"
             className={tab === "application" ? "active" : ""}
@@ -30,6 +21,15 @@ function App() {
             aria-label="Application Metrics"
           >
             <ActivityIcon className="sidebar-nav__icon" />
+          </button>
+          <button
+            type="button"
+            className={tab === "hardware" ? "active" : ""}
+            onClick={() => setTab("hardware")}
+            title="Hardware Metrics"
+            aria-label="Hardware Metrics"
+          >
+            <CpuIcon className="sidebar-nav__icon" />
           </button>
           <button
             type="button"

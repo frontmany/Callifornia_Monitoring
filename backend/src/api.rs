@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
-use std::path::Path as StdPath;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -170,6 +169,8 @@ struct BuiltReport {
     metrics: HashMap<String, ReportMetricStats>,
 }
 
+const REPORT_CREATE_MAX_ATTEMPTS: usize = 3;
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -190,6 +191,16 @@ fn ensure_db_available(state: &AppState) -> Option<axum::response::Response> {
         return Some(db_unavailable_response());
     }
     None
+}
+
+fn is_unique_violation(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<sqlx::Error>()
+        .and_then(|e| match e {
+            sqlx::Error::Database(db_err) => db_err.code(),
+            _ => None,
+        })
+        .as_deref()
+        == Some("23505")
 }
 
 async fn build_report(
@@ -258,35 +269,15 @@ async fn build_report(
     Ok(BuiltReport { server, metrics })
 }
 
-fn report_path_from_db(
-    state: &AppState,
-    report: &db::Report,
-) -> Result<std::path::PathBuf, axum::response::Response> {
-    let Some(stored_path) = report
-        .file_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-    else {
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: "Report file path is missing in database.".to_string(),
-            }),
-        )
-            .into_response());
-    };
-    Ok(report_file::resolve_stored_file_path(
-        &state.reports_dir,
-        stored_path,
-    ))
+fn report_path_from_db(state: &AppState, report: &db::Report) -> std::path::PathBuf {
+    report_file::resolve_stored_file_path(&state.reports_dir, &report.file_path)
 }
 
 async fn read_report_file(
     state: &AppState,
     report: &db::Report,
 ) -> Result<ReportFile, axum::response::Response> {
-    let path = report_path_from_db(state, report)?;
+    let path = report_path_from_db(state, report);
     let json = match fs::read_to_string(&path).await {
         Ok(json) => json,
         Err(e) if e.kind() == ErrorKind::NotFound => {
@@ -325,7 +316,7 @@ async fn write_report_file(
     report: &db::Report,
     report_file: &ReportFile,
 ) -> Result<(), axum::response::Response> {
-    let path = report_path_from_db(state, report)?;
+    let path = report_path_from_db(state, report);
     if let Some(parent) = path.parent() {
         if let Err(e) = fs::create_dir_all(parent).await {
             return Err((
@@ -734,12 +725,6 @@ async fn create_report(
         metrics: built.metrics.clone(),
     };
 
-    let id = Uuid::new_v4();
-    let relpath = report_file::report_json_relpath(id);
-    let file_path = StdPath::new(&state.reports_dir).join(&relpath);
-    // Store a stable, relative key in DB: filename under reports_dir
-    let file_path_str = relpath;
-
     if let Err(e) = fs::create_dir_all(&state.reports_dir).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -763,7 +748,58 @@ async fn create_report(
         }
     };
 
+    let mut created_report = None;
+    for attempt in 1..=REPORT_CREATE_MAX_ATTEMPTS {
+        let id = Uuid::new_v4();
+        let relpath = report_file::report_json_relpath(id);
+        match db::create_report(&state.pool, id, &payload, &relpath).await {
+            Ok(report) => {
+                created_report = Some(report);
+                break;
+            }
+            Err(e) if is_unique_violation(&e) && attempt < REPORT_CREATE_MAX_ATTEMPTS => continue,
+            Err(e) if is_unique_violation(&e) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: "Failed to allocate unique report file path.".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    let report = match created_report {
+        Some(report) => report,
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to create report.".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let file_path = report_path_from_db(&state, &report);
     if let Err(e) = fs::write(&file_path, json).await {
+        if let Err(cleanup_err) = db::delete_report(&state.pool, report.id).await {
+            tracing::warn!(
+                "Failed to clean up report metadata after file write error: {}",
+                cleanup_err
+            );
+        }
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
@@ -773,33 +809,24 @@ async fn create_report(
             .into_response();
     }
 
-    match db::create_report(&state.pool, id, &payload, &file_path_str).await {
-        Ok(report) => (
-            StatusCode::CREATED,
-            Json(ReportResponse {
-                id: report.id,
-                server_id: report.server_id,
-                server: ReportServer {
-                    host: built.server.host,
-                    port: built.server.port,
-                },
-                period: ReportPeriod {
-                    start: payload.period_start,
-                    end: payload.period_end,
-                },
-                metrics: built.metrics,
-                created_at: report.created_at,
-            }),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: e.to_string(),
-            }),
-        )
-            .into_response(),
-    }
+    (
+        StatusCode::CREATED,
+        Json(ReportResponse {
+            id: report.id,
+            server_id: report.server_id,
+            server: ReportServer {
+                host: built.server.host,
+                port: built.server.port,
+            },
+            period: ReportPeriod {
+                start: payload.period_start,
+                end: payload.period_end,
+            },
+            metrics: built.metrics,
+            created_at: report.created_at,
+        }),
+    )
+        .into_response()
 }
 
 async fn update_report(
@@ -856,12 +883,7 @@ async fn update_report(
         metrics: built.metrics,
     };
 
-    let mut target_report = current.clone();
-    if let Some(file_path) = payload.file_path.clone() {
-        target_report.file_path = Some(file_path);
-    }
-
-    if let Err(resp) = write_report_file(&state, &target_report, &report_file).await {
+    if let Err(resp) = write_report_file(&state, &current, &report_file).await {
         return resp;
     }
 
@@ -928,20 +950,16 @@ async fn delete_report(State(state): State<AppState>, Path(id): Path<Uuid>) -> i
         }
     };
 
-    if let Some(file_path) = report.file_path.as_deref() {
-        if !file_path.trim().is_empty() {
-            let final_path = report_file::resolve_stored_file_path(&state.reports_dir, file_path);
-            if let Err(e) = fs::remove_file(&final_path).await {
-                if e.kind() != ErrorKind::NotFound {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse {
-                            error: format!("Failed to delete report file: {}", e),
-                        }),
-                    )
-                        .into_response();
-                }
-            }
+    let final_path = report_file::resolve_stored_file_path(&state.reports_dir, &report.file_path);
+    if let Err(e) = fs::remove_file(&final_path).await {
+        if e.kind() != ErrorKind::NotFound {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to delete report file: {}", e),
+                }),
+            )
+                .into_response();
         }
     }
 

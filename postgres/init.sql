@@ -53,12 +53,12 @@ CREATE TABLE IF NOT EXISTS reports (
     period_start TIMESTAMPTZ NOT NULL,
     period_end TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    file_path TEXT,
+    file_path TEXT NOT NULL,
     
     CONSTRAINT fk_reports_server FOREIGN KEY (server_id) 
         REFERENCES servers(id) ON DELETE CASCADE,
     CONSTRAINT chk_reports_period CHECK (period_start <= period_end),
-    CONSTRAINT chk_reports_content CHECK (file_path IS NOT NULL)
+    CONSTRAINT uk_reports_file_path UNIQUE (file_path)
 );
 
 INSERT INTO metrics (id, name, unit) VALUES

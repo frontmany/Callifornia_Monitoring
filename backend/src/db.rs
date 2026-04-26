@@ -177,7 +177,7 @@ pub struct Report {
     pub period_start: DateTime<Utc>,
     pub period_end: DateTime<Utc>,
     pub created_at: Option<DateTime<Utc>>,
-    pub file_path: Option<String>,
+    pub file_path: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -192,7 +192,6 @@ pub struct UpdateReport {
     pub server_id: Option<i64>,
     pub period_start: Option<DateTime<Utc>>,
     pub period_end: Option<DateTime<Utc>>,
-    pub file_path: Option<String>,
 }
 
 pub async fn list_reports(pool: &PgPool) -> anyhow::Result<Vec<Report>> {
@@ -318,18 +317,13 @@ pub async fn update_report(
     let server_id = r.server_id.unwrap_or(current.server_id);
     let period_start = r.period_start.unwrap_or(current.period_start);
     let period_end = r.period_end.unwrap_or(current.period_end);
-    let file_path = r
-        .file_path
-        .as_deref()
-        .unwrap_or(current.file_path.as_deref().unwrap_or(""));
 
     sqlx::query(
-        "UPDATE reports SET server_id = $1, period_start = $2, period_end = $3, file_path = $4 WHERE id = $5",
+        "UPDATE reports SET server_id = $1, period_start = $2, period_end = $3 WHERE id = $4",
     )
     .bind(server_id)
     .bind(period_start)
     .bind(period_end)
-    .bind(file_path)
     .bind(id)
     .execute(pool)
     .await?;
